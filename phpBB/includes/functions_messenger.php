@@ -619,8 +619,9 @@ class queue
 	function init($object, $package_size)
 	{
 		$this->data[$object] = array();
-		$this->data[$object]['package_size'] = $package_size;
+		$this->data[$object]['package_size'] = (int) $package_size;
 		$this->data[$object]['data'] = array();
+		$this->data[$object]['process_history'] = array();
 	}
 
 	/**
@@ -639,23 +640,19 @@ class queue
 	{
 		global $db, $config, $phpEx, $phpbb_root_path, $user;
 
+		$fp_lock = @fopen($this->cache_file . '.lock', 'wb');
+		if ($fp_lock === false)
+		{
+			return;
+		}
+		if (!flock($fp_lock, LOCK_EX))
+		{
+			fclose($fp_lock);
+			return;
+		}
+		// Critical section start
+
 		set_config('last_queue_run', time(), true);
-
-		// Delete stale lock file
-		if (file_exists($this->cache_file . '.lock') && !file_exists($this->cache_file))
-		{
-			@unlink($this->cache_file . '.lock');
-			return;
-		}
-
-		if (!file_exists($this->cache_file) || (file_exists($this->cache_file . '.lock') && filemtime($this->cache_file) > time() - $config['queue_interval']))
-		{
-			return;
-		}
-
-		$fp = @fopen($this->cache_file . '.lock', 'wb');
-		fclose($fp);
-		@chmod($this->cache_file . '.lock', 0777);
 
 		include($this->cache_file);
 
@@ -668,13 +665,46 @@ class queue
 				$data_ary['package_size'] = 0;
 			}
 
-			$package_size = $data_ary['package_size'];
-			$num_items = (!$package_size || sizeof($data_ary['data']) < $package_size) ? sizeof($data_ary['data']) : $package_size;
+			$package_size = (int) $data_ary['package_size'];
+			$num_items = (int) ((!$package_size || sizeof($data_ary['data']) < $package_size) ? sizeof($data_ary['data']) : $package_size);
 
-			// If the amount of emails to be sent is way more than package_size than we need to increase it to prevent backlogs...
-			if (sizeof($data_ary['data']) > $package_size * 2.5)
-			{
-				$num_items = sizeof($data_ary['data']);
+			if ($package_size){
+				// Speed control
+				if (!isset($data_ary['process_history']))
+				{
+					$this->queue_data[$object]['process_history'] = array();
+				}
+
+				$now = (int) time();
+				$total_n = 0;
+				$process_history = $this->queue_data[$object]['process_history'];
+
+				foreach ($process_history as $time => $n)
+				{
+					if ($time < $now - 3600)
+					{
+						unset($this->queue_data[$object]['process_history'][$time]);
+					}
+					else
+					{
+						$total_n += (int) $n;
+					}
+				}
+
+				$n = (int) (($package_size > $total_n) ? ($package_size - $total_n) : 0);
+				$num_items = (int) (($num_items < $n) ? $num_items : $n);
+
+				if ($num_items)
+				{
+					if (isset($this->queue_data[$object]['process_history'][$now]))
+					{
+						$this->queue_data[$object]['process_history'][$now] += (int) $num_items;
+					}
+					else
+					{
+						$this->queue_data[$object]['process_history'][$now] = (int) $num_items;
+					}
+				}
 			}
 
 			switch ($object)
@@ -711,9 +741,6 @@ class queue
 					}
 
 				break;
-
-				default:
-					return;
 			}
 
 			for ($i = 0; $i < $num_items; $i++)
@@ -738,8 +765,6 @@ class queue
 
 						if (!$result)
 						{
-							@unlink($this->cache_file . '.lock');
-
 							messenger::error('EMAIL', $err_msg);
 							continue 2;
 						}
@@ -758,8 +783,11 @@ class queue
 				}
 			}
 
-			// No more data for this object? Unset it
-			if (!sizeof($this->queue_data[$object]['data']))
+			// No more data and process history for this object? Unset it
+			if (
+				!sizeof($this->queue_data[$object]['data']) &&
+				!sizeof($this->queue_data[$object]['process_history'])
+			)
 			{
 				unset($this->queue_data[$object]);
 			}
@@ -783,20 +811,21 @@ class queue
 		{
 			if ($fp = @fopen($this->cache_file, 'wb'))
 			{
-				@flock($fp, LOCK_EX);
 				fwrite($fp, "<?php\nif (!defined('IN_PHPBB')) exit;\n\$this->queue_data = unserialize(" . var_export(serialize($this->queue_data), true) . ");\n\n?>");
-				@flock($fp, LOCK_UN);
 				fclose($fp);
-
 				phpbb_chmod($this->cache_file, CHMOD_READ | CHMOD_WRITE);
 			}
 		}
 
+		// Critical section end
+		flock($fp_lock, LOCK_UN);
+		fclose($fp_lock);
 		@unlink($this->cache_file . '.lock');
 	}
 
 	/**
 	* Save queue
+	* Using lock file
 	*/
 	function save()
 	{
@@ -805,13 +834,33 @@ class queue
 			return;
 		}
 
+		$fp_lock = @fopen($this->cache_file . '.lock', 'wb');
+		if ($fp_lock === false)
+		{
+			return;
+		}
+		if (!flock($fp_lock, LOCK_EX))
+		{
+			// Try one more time
+			if (!flock($fp_lock, LOCK_EX))
+			{
+				fclose($fp_lock);
+				return;
+			}
+		}
+		// Critical section start
+
 		if (file_exists($this->cache_file))
 		{
 			include($this->cache_file);
 
 			foreach ($this->queue_data as $object => $data_ary)
 			{
-				if (isset($this->data[$object]) && sizeof($this->data[$object]))
+				if (
+					isset($this->data[$object]) &&
+					isset($this->data[$object]['data']) &&
+					sizeof($this->data[$object]['data'])
+				)
 				{
 					$this->data[$object]['data'] = array_merge($data_ary['data'], $this->data[$object]['data']);
 				}
@@ -819,18 +868,33 @@ class queue
 				{
 					$this->data[$object]['data'] = $data_ary['data'];
 				}
+
+				if (
+					isset($this->data[$object]) &&
+					isset($this->data[$object]['process_history']) &&
+					sizeof($this->data[$object]['process_history'])
+				)
+				{
+					$this->data[$object]['process_history'] = array_merge($data_ary['process_history'], $this->data[$object]['process_history']);
+				}
+				else
+				{
+					$this->data[$object]['process_history'] = $data_ary['process_history'];
+				}
 			}
 		}
 
-		if ($fp = @fopen($this->cache_file, 'w'))
+		if ($fp = @fopen($this->cache_file, 'wb'))
 		{
-			@flock($fp, LOCK_EX);
 			fwrite($fp, "<?php\nif (!defined('IN_PHPBB')) exit;\n\$this->queue_data = unserialize(" . var_export(serialize($this->data), true) . ");\n\n?>");
-			@flock($fp, LOCK_UN);
 			fclose($fp);
-
 			phpbb_chmod($this->cache_file, CHMOD_READ | CHMOD_WRITE);
 		}
+
+		// Critical section end
+		flock($fp_lock, LOCK_UN);
+		fclose($fp_lock);
+		@unlink($this->cache_file . '.lock');
 	}
 }
 
