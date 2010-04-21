@@ -668,7 +668,8 @@ class queue
 			$package_size = (int) $data_ary['package_size'];
 			$num_items = (int) ((!$package_size || sizeof($data_ary['data']) < $package_size) ? sizeof($data_ary['data']) : $package_size);
 
-			if ($package_size){
+			if ($package_size)
+			{
 				// Speed control
 				if (!isset($data_ary['process_history']))
 				{
