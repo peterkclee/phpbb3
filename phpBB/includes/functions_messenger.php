@@ -39,7 +39,7 @@ class messenger
 	{
 		global $config;
 
-		$this->use_queue = (!$config['email_package_size']) ? false : $use_queue;
+		$this->use_queue = (bool) $use_queue;
 		$this->subject = '';
 
 		// Determine EOL character (\n for UNIX, \r\n for Windows and \r for Mac)
@@ -366,7 +366,7 @@ class messenger
 	{
 		global $config;
 
-		if ($config['email_package_size'] && $this->use_queue && !empty($this->queue))
+		if ($this->use_queue && !empty($this->queue))
 		{
 			$this->queue->save();
 			return;
@@ -438,7 +438,7 @@ class messenger
 		}
 
 		$use_queue = false;
-		if ($config['email_package_size'] && $this->use_queue)
+		if ($this->use_queue)
 		{
 			if (empty($this->queue))
 			{
@@ -532,7 +532,7 @@ class messenger
 		}
 
 		$use_queue = false;
-		if ($config['jab_package_size'] && $this->use_queue)
+		if ($this->use_queue)
 		{
 			if (empty($this->queue))
 			{
