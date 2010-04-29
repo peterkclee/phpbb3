@@ -816,6 +816,10 @@ class queue
 				fclose($fp);
 				phpbb_chmod($this->cache_file, CHMOD_READ | CHMOD_WRITE);
 			}
+			else
+			{
+				messenger::error('MSG_QUEUE', $user->lang['ERR_FOPEN']);
+			}
 		}
 
 		// Critical section end
@@ -830,6 +834,8 @@ class queue
 	*/
 	function save()
 	{
+		global $user;
+
 		if (!sizeof($this->data))
 		{
 			return;
@@ -838,6 +844,7 @@ class queue
 		$fp_lock = @fopen($this->cache_file . '.lock', 'wb');
 		if ($fp_lock === false)
 		{
+			messenger::error('MSG_QUEUE', $user->lang['ERR_FLOCK']);
 			return;
 		}
 		if (!flock($fp_lock, LOCK_EX))
@@ -845,6 +852,7 @@ class queue
 			// Try one more time
 			if (!flock($fp_lock, LOCK_EX))
 			{
+				messenger::error('MSG_QUEUE', $user->lang['ERR_FLOCK']);
 				fclose($fp_lock);
 				return;
 			}
@@ -890,6 +898,10 @@ class queue
 			fwrite($fp, "<?php\nif (!defined('IN_PHPBB')) exit;\n\$this->queue_data = unserialize(" . var_export(serialize($this->data), true) . ");\n\n?>");
 			fclose($fp);
 			phpbb_chmod($this->cache_file, CHMOD_READ | CHMOD_WRITE);
+		}
+		else
+		{
+			messenger::error('MSG_QUEUE', $user->lang['ERR_FOPEN']);
 		}
 
 		// Critical section end
