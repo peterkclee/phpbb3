@@ -2959,6 +2959,10 @@ function login_box($redirect = '', $l_explain = '', $l_success = '', $admin = fa
 	{
 		$s_hidden_fields['redirect'] = $redirect;
 	}
+	else
+	{
+		$s_hidden_fields['redirect'] = build_url();
+	}
 
 	if ($admin)
 	{
